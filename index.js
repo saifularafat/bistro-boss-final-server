@@ -2,6 +2,7 @@ const express = require('express');
 const app = express();
 const cors = require('cors');
 require('dotenv').config();
+const stripe = require('stripe')(process.env.PAYMENT_SECRET_KEY)
 const jwt = require('jsonwebtoken');
 const { MongoClient, ServerApiVersion, ObjectId } = require('mongodb');
 const port = process.env.PORT || 5000
@@ -50,6 +51,7 @@ async function run() {
         const menuCollection = client.db('bistroDB').collection('menu');
         const reviewCollection = client.db('bistroDB').collection('reviews');
         const cartCollection = client.db('bistroDB').collection('carts');
+        const paymentCollection = client.db('bistroDB').collection('payments');
 
         /* json web Token */
         app.post('/jwt', async (req, res) => {
@@ -59,12 +61,12 @@ async function run() {
         })
 
         // ? warning :>  use verifyJWT before using verifyAdmin
-        const verifyAdmin = async ( req, res, next ) => {
+        const verifyAdmin = async (req, res, next) => {
             const email = req.decoded.email;
             const query = { email: email };
-            const user = await userCollection.findOne( query );
-            if( user?.role !== 'admin'){
-                return res.status(403).send({error: true , message: 'forbidden message'});
+            const user = await userCollection.findOne(query);
+            if (user?.role !== 'admin') {
+                return res.status(403).send({ error: true, message: 'forbidden message' });
             }
             next();
         }
@@ -141,6 +143,20 @@ async function run() {
             res.send(result);
         })
 
+        /* admin post api database */ //security 1st: verifyJWT,, 2nd: verifyAdmin
+        app.post('/menu', verifyJWT, verifyAdmin, async (req, res) => {
+            const newItem = req.body;
+            const result = await menuCollection.insertOne(newItem);
+            res.send(result)
+        })
+        app.delete('/menu/:id', verifyJWT, verifyAdmin, async (req, res) => {
+            const id = req.params.id;
+            const query = { _id: new ObjectId(id) };
+            const result = await menuCollection.deleteOne(query);
+            res.send(result);
+        })
+
+
         /* reviews all data apis */
         app.get('/reviews', async (req, res) => {
             const result = await reviewCollection.find().toArray();
@@ -157,9 +173,8 @@ async function run() {
             }
 
             const decodedEmail = req.decoded.email;
-            console.log(decodedEmail);
             if (email !== decodedEmail) {
-                return res.status(403).send({ error: true, message: 'provident access' })
+                return res.status(403).send({ error: true, message: 'forbidden access' })
             }
 
             const query = { email: email };
@@ -169,7 +184,6 @@ async function run() {
         })
         app.post('/carts', async (req, res) => {
             const item = req.body;
-            // console.log(cart);
             const result = await cartCollection.insertOne(item);
             res.send(result);
         })
@@ -178,6 +192,31 @@ async function run() {
             const query = { _id: new ObjectId(id) };
             const result = await cartCollection.deleteOne(query);
             res.send(result);
+        })
+
+        // ! ! ! create payment intent 
+        app.post("/create-payment-intent", verifyJWT, async (req, res) => {
+            const { price } = req.body;
+            const amount = price * 100;
+            const paymentIntent = await stripe.paymentIntents.create({
+                amount: amount,
+                currency: 'usd',
+                payment_method_types: ['card']
+            });
+            res.send({
+                clientSecret: paymentIntent.client_secret
+            });
+        })
+
+        // payment History database save api
+        app.post('/payments', async (req, res) => {
+            const payment = req.body;
+            const insertResult = await paymentCollection.insertOne(payment);
+
+            const query = { _id: { $in: payment.cartItems.map(id => new ObjectId(id))}};
+            const deleteResult = await cartCollection.deleteMany(query);
+
+            res.send(insertResult, deleteResult);
         })
 
         // Send a ping to confirm a successful connection
